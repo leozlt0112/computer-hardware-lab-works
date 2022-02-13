@@ -1,0 +1,59 @@
+module part1
+	(
+		input [31:0] X,
+		input [31:0] Y,
+		output [31:0] result
+);
+	logic signX;
+	logic signY;
+	logic [7:0] expX;
+	logic [7:0] expY;
+	
+	logic final_Sign;
+	logic [22:0] xman;
+	logic [22:0] yman;
+	
+	assign signX = X[31];
+	assign signY = Y[31];
+	
+	assign expX = X[30:23];
+	assign expY = Y[30:23];
+
+	assign xman = X[22:0];
+	assign yman = Y[22:0];
+	
+	logic [7:0] ExponentSum;
+	assign final_Sign = signX ^ signY;
+	assign ExponentSum = expX + expY - 8'd127;
+	
+	logic [23:0] Mantissax;
+	assign Mantissax={1'b1, xman[22:0]};
+	logic [23:0] Mantissay ;
+	assign Mantissay= {1'b1, yman[22:0]};
+	logic [47:0] MantissaProduct;
+	assign MantissaProduct = Mantissax * Mantissay;
+	
+	logic [24:0] truncatedbits ;
+	assign truncatedbits = MantissaProduct[47:23];
+	logic [24:0] truncatedbits_new;
+	logic [7:0] new_Exp;
+	always_comb begin 
+		if (truncatedbits[24] == 1'b1) begin 
+			truncatedbits_new = truncatedbits >> 1;
+			new_Exp = ExponentSum +1;
+		end 
+		else begin 
+			truncatedbits_new = truncatedbits;
+			new_Exp = ExponentSum;
+		end 
+	end 
+	logic [22:0] truncatedbits_for_final ;
+	assign truncatedbits_for_final[22:0] = truncatedbits_new[22:0];
+	logic [31:0] final_answer ;
+	assign final_answer = {final_Sign, new_Exp, truncatedbits_for_final};
+	assign result = final_answer;
+ 
+// Design your 32-bit Floating Point unit here. 
+
+
+endmodule

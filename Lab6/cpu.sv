@@ -1,0 +1,411 @@
+module cpu # (
+	parameter IW = 32, // instr width
+	parameter REGS = 32 // number of registers
+)(
+	input clk,
+	input reset,
+	
+	// read only 
+	output reg [IW-1:0] 	o_pc_addr,
+	output reg				o_pc_rd,
+	input  [IW-1:0] 	i_pc_rddata,
+	output [3:0] 		o_pc_byte_en,
+	
+	// read/write 
+	output reg [IW-1:0] 	o_ldst_addr,
+	output reg				o_ldst_rd,
+	output reg			o_ldst_wr,
+	input  [IW-1:0] 	i_ldst_rddata,
+	output reg [IW-1:0] 	o_ldst_wrdata,
+	output reg [3:0] 		o_ldst_byte_en,
+	
+	output reg [IW-1:0] 	o_tb_regs [0:REGS-1]
+);
+
+
+reg [IW-1:0] IR;
+
+
+
+assign o_pc_byte_en = 4'b1111;
+
+
+logic  [ 6:0] 	opcode;
+logic	[ 2:0]	funct3;
+logic	[ 6:0]	funct7;
+logic	[ 4:0]	rs1;
+logic	[ 4:0]	rs2;
+logic	[ 4:0]	rd;
+logic	[31:0]	imm;
+decoding ddd(IR, opcode, funct3, funct7, rs1, rs2, rd, imm);
+reg [3:0] counter;
+
+always @(posedge clk) begin
+	o_pc_rd <= 1'b0;
+	o_ldst_rd <= 1'b0;
+	o_ldst_wr <= 1'b0;
+	if (!reset) begin
+		case (counter)
+		
+			// fetch instr
+			4'd0: begin
+				counter <= counter +1;
+				o_pc_rd <= 1'b1;
+			end
+			
+			// wait for instr fetch
+			4'd1: begin
+				counter <= counter +1;
+			end
+			
+			// store instr in IR
+			4'd2: begin
+				counter <= counter +1;
+				IR <= i_pc_rddata;
+			end
+			
+			// execute instruction
+			4'd3: begin
+				o_pc_addr <= o_pc_addr +4;
+				// R&I&U
+				if (opcode[6:0]==7'b0110011) begin
+					counter <= 0;
+					if 	(funct3==3'h0) begin 
+						if (funct7==7'h00) begin 
+							o_tb_regs[rd] <= o_tb_regs[rs1] + o_tb_regs[rs2];
+						end 
+					end 
+					if 	(funct3==3'h0 ) begin 
+						if(funct7==7'h20) begin 
+							 o_tb_regs[rd] <= o_tb_regs[rs1] - o_tb_regs[rs2];
+						end
+					end  
+					if 	(funct3==3'h4) begin 
+						if (funct7==7'h00) begin 
+							o_tb_regs[rd] <= o_tb_regs[rs1] ^ o_tb_regs[rs2];
+						end
+					end 
+					if 	(funct3==3'h6) begin  
+						if (funct7==7'h00) begin 
+							o_tb_regs[rd] <= o_tb_regs[rs1] | o_tb_regs[rs2];
+						end 
+					end 
+					if 	(funct3==3'h7) begin 
+						if (funct7==7'h00) begin  
+							o_tb_regs[rd] <= o_tb_regs[rs1] & o_tb_regs[rs2];
+						end 
+					end 
+					if 	(funct3==3'h1) begin
+						if(funct7==7'h00) begin 
+							o_tb_regs[rd] <= o_tb_regs[rs1] <<  o_tb_regs[rs2][4:0];
+						end 
+					end 
+					if 	(funct3==3'h5) begin 
+						if (funct7==7'h00) begin 
+							o_tb_regs[rd] <= o_tb_regs[rs1] >>  o_tb_regs[rs2][4:0];
+						end 
+					end 
+					if 	(funct3==3'h5 ) begin 
+						if (funct7==7'h20) begin  
+							o_tb_regs[rd] <= o_tb_regs[rs1] >>> o_tb_regs[rs2][4:0];
+						end 
+					end 
+					if 	(funct3==3'h2) begin 
+						if (funct7==7'h00) begin  
+							o_tb_regs[rd] <= ($signed(o_tb_regs[rs1])) < ($signed(o_tb_regs[rs2])) ? 1 : 0;
+						end 
+					end 
+					if 	(funct3==3'h3) begin  
+						if (funct7==7'h00) begin 
+							o_tb_regs[rd] <= o_tb_regs[rs1] < o_tb_regs[rs2] ? 1 : 0;
+						end 
+					end
+				end 
+				if (opcode[6:0]==7'b0010011) begin 
+					counter <= 0;
+					if 	(funct3==3'h0) begin 
+						o_tb_regs[rd] <= o_tb_regs[rs1] + imm;
+					end 
+					if 	(funct3==3'h4) begin//op = 6'd11;
+						o_tb_regs[rd] <= o_tb_regs[rs1] ^ imm;
+					end 
+					if 	(funct3==3'h6) begin //op = 6'd12;
+						o_tb_regs[rd] <= o_tb_regs[rs1] | imm;
+					end 
+					if 	(funct3==3'h7) begin //op = 6'd13;
+						o_tb_regs[rd] <= o_tb_regs[rs1] & imm;
+					end 
+					if 	(funct3==3'h1 && imm[11:5]==7'h00) begin  //op = 6'd14;
+						o_tb_regs[rd] <= o_tb_regs[rs1] <<  imm[4:0];
+					end 
+					if 	(funct3==3'h5 && imm[11:5]==7'h00) begin //op = 6'd15;
+						o_tb_regs[rd] <= o_tb_regs[rs1] >>  imm[4:0];
+					end 
+					if 	(funct3==3'h5 && imm[11:5]==7'h20) begin //op = 6'd16;
+						o_tb_regs[rd] <= o_tb_regs[rs1] >>> imm[4:0];
+					end 
+					if 	(funct3==3'h2) begin //op = 6'd17;
+						o_tb_regs[rd] <= $signed(o_tb_regs[rs1]) < $signed(imm) ? 1 : 0;
+					end 
+					if 	(funct3==3'h3) begin //op = 6'd18;
+						o_tb_regs[rd] <= o_tb_regs[rs1] < imm ? 1 : 0;
+					end 
+				end 
+				if (opcode[6:0] ==7'b0110111) begin 
+					counter <= 0;
+					o_tb_regs[rd] <= imm;
+				end 
+				if (opcode[6:0] ==7'b0010111) begin 
+					counter <= 0;
+					o_tb_regs[rd] <= o_pc_addr + imm; 
+				end
+				if (opcode[6:0]==7'b1100011) begin 
+					counter <= 0;
+					if 	(funct3==3'h0) begin 
+						o_pc_addr <= (o_tb_regs[rs1] == o_tb_regs[rs2]) ? (o_pc_addr + imm) : (o_pc_addr + 4);
+					end
+					if 	(funct3==3'h1) begin//op = 6'd30;
+						o_pc_addr <= (o_tb_regs[rs1] != o_tb_regs[rs2]) ? (o_pc_addr + imm) : (o_pc_addr + 4); 
+					end
+					if 	(funct3==3'h4) begin //op = 6'd31;
+						o_pc_addr <= ($signed(o_tb_regs[rs1]) <  $signed(o_tb_regs[rs2])) ? (o_pc_addr + imm) : (o_pc_addr + 4); 
+					end	
+					if 	(funct3==3'h5) begin //op = 6'd32;
+						o_pc_addr <= ($signed(o_tb_regs[rs1]) >= $signed(o_tb_regs[rs2])) ? (o_pc_addr + imm) : (o_pc_addr + 4);
+					end 
+					if 	(funct3==3'h6) begin //op = 6'd33;
+						o_pc_addr <= (o_tb_regs[rs1] <  o_tb_regs[rs2]) ? (o_pc_addr + imm) : (o_pc_addr + 4);
+					end 
+					if 	(funct3==3'h7) begin //op = 6'd34;
+						o_pc_addr <= (o_tb_regs[rs1] >= o_tb_regs[rs2]) ? (o_pc_addr + imm) : (o_pc_addr + 4); 
+					end
+				end 
+				
+				if (opcode[6:0]==7'b0000011) begin
+					o_ldst_addr <= o_tb_regs[rs1] + imm;
+					counter <= counter +1;
+					o_ldst_byte_en <= 4'b1111; 
+					o_ldst_rd <= 1'b1;
+				end
+				if (opcode[6:0]==7'b0100011) begin 
+					o_ldst_addr <= o_tb_regs[rs1] + imm;
+					counter <= counter +1;
+					if 		(funct3==3'h0) begin 
+							o_ldst_byte_en <= 4'b0001; 
+							o_ldst_wr <= 1'b1; 
+							o_ldst_wrdata <= o_tb_regs[rs2][7:0];
+					end 
+					if 	(funct3==3'h1) begin 
+						o_ldst_byte_en <= 4'b0011; 
+						o_ldst_wr <= 1'b1; 
+						o_ldst_wrdata <= o_tb_regs[rs2][15:0]; 
+					end 
+					if 	(funct3==3'h2) begin 
+						o_ldst_byte_en <= 4'b1111; 
+						o_ldst_wr <= 1'b1; 
+						o_ldst_wrdata <= o_tb_regs[rs2][31:0]; 
+					end
+				end
+				if (opcode[6:0]==7'b1101111) begin 
+					counter <= 0;
+					o_tb_regs[rd] <= o_pc_addr + 4; 
+					o_pc_addr <= o_pc_addr + imm;
+				end 
+				if (opcode[6:0]==7'b1100111) begin 
+					counter <= 0;
+					o_tb_regs[rd] <= o_pc_addr + 4; 
+					o_pc_addr <= o_tb_regs[rs1] + imm; 
+				end				
+			end
+			4'd4: begin
+				counter <= counter +1;
+			end
+			
+			// store data in regs
+			4'd5: begin
+				counter <=0;
+				if (opcode[6:0]==7'b0000011) begin
+					
+						if 		(funct3==3'h0) begin 
+							o_tb_regs[rd][31:0] = {{24{i_ldst_rddata[7]}}, i_ldst_rddata[7:0]};
+							
+						end 
+						if 	(funct3==3'h1) begin
+							o_tb_regs[rd][31:0] = {{16{i_ldst_rddata[15]}}, i_ldst_rddata[15:0]};
+						end 
+						if 	(funct3==3'h2) begin 
+							o_tb_regs[rd][31:0] = i_ldst_rddata; 
+							//op = 6'd21;
+						end 
+						if 	(funct3==3'h4) begin 
+							o_tb_regs[rd] = {24'b0, i_ldst_rddata[7:0]};
+							//op = 6'd22;
+						end 
+						if 	(funct3==3'h5) begin 
+							o_tb_regs[rd] = {16'b0, i_ldst_rddata[15:0]};
+							//op = 6'd23;
+						end 
+				end// Load
+			end// S4
+		endcase//Stages
+		
+		o_tb_regs[0] <= 32'b0; 
+	end
+	else  begin
+		o_tb_regs[0] <=32'b0;
+		o_tb_regs[1] <=32'b0;
+		o_tb_regs[2] <=32'b0;
+		o_tb_regs[3] <=32'b0;
+		o_tb_regs[4] <=32'b0;
+		o_tb_regs[5] <=32'b0;
+		o_tb_regs[6] <=32'b0;
+		o_tb_regs[7] <=32'b0;
+		o_tb_regs[8] <=32'b0;
+		o_tb_regs[9] <=32'b0;
+		o_tb_regs[10]<=32'b0;
+		o_tb_regs[11]<=32'b0;
+		o_tb_regs[12]<=32'b0;
+		o_tb_regs[13]<=32'b0;
+		o_tb_regs[14]<=32'b0;
+		o_tb_regs[15]<=32'b0;
+		o_tb_regs[16]<=32'b0;
+		o_tb_regs[17]<=32'b0;
+		o_tb_regs[18]<=32'b0;
+		o_tb_regs[19]<=32'b0;
+		o_tb_regs[20]<=32'b0;
+		o_tb_regs[21]<=32'b0;
+		o_tb_regs[22]<=32'b0;
+		o_tb_regs[23]<=32'b0;
+		o_tb_regs[24]<=32'b0;
+		o_tb_regs[25]<=32'b0;
+		o_tb_regs[26]<=32'b0;
+		o_tb_regs[27]<=32'b0;
+		o_tb_regs[28]<=32'b0;
+		o_tb_regs[29]<=32'b0;
+		o_tb_regs[30]<=32'b0;
+		o_tb_regs[31]<=32'b0;
+		o_pc_addr <= 32'b0;
+		IR <= 32'b0;
+		counter <= 0; 
+	end
+end
+
+
+endmodule
+
+
+//////////////////// IR Decoder ////////////////////
+
+module decoding(
+	input		[31:0] 	instr,
+	output logic [ 6:0] 	opcode,
+	output logic [ 2:0]	funct3,
+	output logic [ 6:0]	funct7,
+	output logic [ 4:0]	rs1,
+	output logic [ 4:0]	rs2,
+	output logic [ 4:0]	rd,
+	output logic [31:0]	imm
+);
+	  
+always_comb begin
+
+	opcode = instr[6:0];
+	if (opcode[6:0] == 7'b0110011)
+		begin
+			funct3 = instr[14:12];
+			funct7 = instr[31:25];
+			rs1	 = instr[19:15];
+			rs2	 = instr[24:20];
+			rd	 	 = instr[11: 7];
+			imm	 = 32'b0;
+			
+		end
+		
+		if (opcode[6:0] == 7'b0010011)
+		begin
+			funct3 = instr[14:12];
+			funct7 = 7'b0;
+			rs1	 = instr[19:15];
+			rs2	 = 5'b0;
+			rd	 	 = instr[11: 7];
+			imm = {{21{instr[31]}},instr[30:20]};
+			//op = 6'd00;
+		end
+		
+		if (opcode[6:0] == 7'b0000011)
+		begin 
+		
+			funct3 = instr[14:12];
+			funct7 = 7'b0;
+			rs1	 = instr[19:15];
+			rs2	 = 5'b0;
+			rd	 	 = instr[11: 7];
+			imm = {{21{instr[31]}},instr[30:20]};
+			
+		end
+		
+		if (opcode[6:0] == 7'b0100011)
+		begin
+			funct3 = instr[14:12];
+			funct7 = 7'b0;
+			rs1	 = instr[19:15];
+			rs2	 = instr[24:20];
+			rd	 	 = 5'b0;;
+			imm	 = {{21{instr[31]}}, instr[30:25], instr[11:7]};
+		end 
+		if (opcode[6:0] == 7'b0110111)
+			begin
+			funct3 = 3'b0;
+			funct7 = 7'b0;
+			rs1	 = 5'b0;
+			rs2	 = 5'b0;
+			rd	 	 = instr[11: 7];
+			imm	 = {instr[31:12], 12'b0};
+			
+		end
+		
+		if (opcode[6:0] == 7'b0010111)
+		begin
+			funct3 = 3'b0;
+			funct7 = 7'b0;
+			rs1	 = 5'b0;
+			rs2	 = 5'b0;
+			rd	 	 = instr[11: 7];
+			imm	 = {instr[31:12], 12'b0};
+			
+		end
+		
+		if (opcode[6:0] == 7'b1100011)
+		begin
+			funct3 = instr[14:12];
+			funct7 = 7'b0;
+			rs1	 = instr[19:15];
+			rs2	 = instr[24:20];
+			rd	 	 = instr[11: 7];
+			imm	 = {{19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};	
+		end
+
+		if (opcode[6:0] == 7'b1101111)
+		begin
+			funct3 = 3'b0;
+			funct7 = 7'b0;
+			rs1	 = 5'b0;
+			rs2	 = 5'b0;
+			rd	 	 = instr[11: 7];
+			imm	 = {{11{instr[31]}}, instr[31], instr[19:12], instr[20], instr[30:21], 1'b0};
+		end
+		
+		if (opcode[6:0] == 7'b1100111)
+		begin
+			funct3 = instr[14:12];
+			funct7 = 7'b0;
+			rs1	 = instr[19:15];
+			rs2	 = 5'b0;
+			rd	 	 = instr[11: 7];
+			imm	 = {{20{instr[31]}}, instr[31:20]};
+		end
+		
+		
+end
+endmodule
+

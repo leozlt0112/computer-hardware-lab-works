@@ -1,0 +1,651 @@
+module cpu # (
+	parameter IW = 32, // instr width
+	parameter REGS = 32 // number of registers
+)(
+	input clk,
+	input reset,
+	
+	//current address stored in the PC
+	output [IW-1:0] o_pc_addr,
+	//read enable for PC
+	output o_pc_rd,
+	//incoming memory data for PC
+	input [IW-1:0] i_pc_rddata,
+	//access memory by word, half word or byte.
+	output [3:0] o_pc_byte_en,
+
+	// read/write port
+	output [IW-1:0] o_ldst_addr,
+	output o_ldst_rd,
+	output o_ldst_wr,
+	input [IW-1:0] i_ldst_rddata,
+	output [IW-1:0] o_ldst_wrdata,
+
+	//access memory by word, half word or byte.
+	output [3:0] o_ldst_byte_en,
+	
+	output [IW-1:0] o_tb_regs [0:REGS-1]
+);
+
+	//word address
+	parameter WORD = 4'b1111 , HALF_WORD = 4'b0011, BYTE=4'b0001;
+	//index
+	parameter ZERO=2'h0, ONE= 2'h1, TWO=2'h2, THREE=2'h3 ;
+	
+	//opcodes
+	parameter ARITHMETIC = 7'b0110011;
+	parameter ARITHMETIC_I = 7'b0010011;
+	parameter LOAD = 7'b0000011;
+	parameter BRANCH = 7'b1100011;
+	parameter LUI=7'b0110111;
+	parameter AUIPC= 7'b0010111;
+	parameter JUMP = 7'b1101111;
+	parameter JUMP_REG = 7'b1100111;
+	parameter STORE = 7'b0100011;
+
+	// R Type funct 3
+	parameter add = 3'h0 , sub = 3'h0, exor = 3'h4, orr = 3'h6, ande = 3'h7, sll = 3'h1, srl = 3'h5, sra = 3'h5, slt = 3'h2, sltu = 3'h3;
+	// I Type funct 3
+	parameter addi = 3'h0 , xori = 3'h4, ori = 3'h6, andi = 3'h7, slli = 3'h1, srli = 3'h5, srai = 3'h5, slti = 3'h2, sltiu = 3'h3;
+	// States
+	//parameter S_0 =5'd0 , S_1 = 5'd1, S_2 = 5'd2 , S_3 = 5'd3, S_4 = 5'd4, S_5 = 5'd5; 	
+	// ALU operations
+	parameter adds = 3'd1, subs=3'd2, xors=3'd3, ors=3'd4, ands=3'd5, slls=3'd6, srls=3'd7, sras=3'd8, slts=3'd9, sltus=3'd10; 
+
+	logic [3:0] word_length; //defualt = WORD
+	logic read_memory; //default = 0
+	logic [IW-1:0] word_index; //default = ZERO
+
+	assign o_pc_byte_en = word_length;	
+	assign o_pc_rd = read_memory;
+	assign o_ldst_addr = word_index; 	
+	
+	//done signal for an instruction
+	logic done;	
+
+	//Program counter register
+	logic [IW-1:0] PC;	
+	assign o_pc_addr = PC;
+
+	//signal to indicate that we must write custom address to PC
+	logic custom_wren;
+
+	//holds the custom address for the PC
+	logic [IW-1:0] custom_address;
+	
+	//connect the register outputs to the processor output
+	wire [IW-1:0] reg_out [0:REGS-1];
+	assign o_tb_regs = reg_out;
+
+	// opcode 
+	logic [6:0] III;
+	//Rd
+	logic [4:0] RD;
+	//funct3
+	logic [2:0] FUNCT3;
+	//rs1
+	logic [4:0] RS1;
+	//rs2
+	logic [4:0] RS2;
+	//funct7
+	logic [6:0] FUNCT7;
+
+	//immediate value for I type instructions
+	logic [IW-1:0] IMM_I;
+	//immediate value for S type instructions
+	logic [IW-1:0] IMM_S;
+	//immediate value for B type instructions
+	logic [IW-1:0] IMM_B;
+	//immediate value for U type instructions
+	logic [IW-1:0] IMM_U;
+	//immediate value for J type instructions
+	logic [IW-1:0] IMM_J;
+	
+	//extract immediate values from the instruction.
+	assign IMM_I = { {(21){i_pc_rddata[31]}} , i_pc_rddata[30:25], i_pc_rddata[24:21], i_pc_rddata[20] };
+	assign IMM_S = { {(21){i_pc_rddata[31]}} , i_pc_rddata[30:25] , i_pc_rddata[11:7] };
+	assign IMM_B = { {(20){i_pc_rddata[31]}} , i_pc_rddata[7] , i_pc_rddata[30:25] , i_pc_rddata[11:8], 1'b0};
+	assign IMM_U = { i_pc_rddata[31] , i_pc_rddata[30:20] , i_pc_rddata[19:12] ,  {(12){1'b0}} };
+	assign IMM_J = { {12{i_pc_rddata[31]}} , i_pc_rddata[19:12],  i_pc_rddata[20] , i_pc_rddata[30:25] , i_pc_rddata[24:21] , 1'b0};
+	
+	//extract opcode, registers, and special instructions
+	assign III = i_pc_rddata[6:0];
+	assign RD = i_pc_rddata[11:7];
+	assign FUNCT3 = i_pc_rddata[14:12];
+	assign RS1 = i_pc_rddata[19:15];
+	assign RS2 = i_pc_rddata[24:20];
+	assign FUNCT7 = i_pc_rddata[31:25];
+	
+	//data to write to the register
+	logic [IW-1:0] write_data;	
+	
+	//input address of register a
+	logic [4:0] r_a;	
+	//input address of register b
+	logic [4:0] r_b;
+
+	//assign inputs
+	// assign r_a = RS1;
+	// assign r_b = RS2;
+	
+	//address of the register to write to
+	logic [4:0] write_address;
+
+	//whether to write or not is determined when this signal is asserted.	
+	logic write_enable;
+
+	//data at register a
+	wire [IW-1:0] output_a;
+
+	//data at register b
+	wire [IW-1:0] output_b;
+
+	//instantiate the register file
+	regfile file(clk, reset, write_address, write_enable, write_data, r_a, r_b, output_a, output_b, reg_out);	
+	
+	//wire into the input b of the ALU
+	logic [IW-1:0] wire_into_input_b;
+
+	//operation selector
+	logic [3:0] operation_select;
+	
+	logic [IW-1:0] alu_output;
+
+	//mux selector for immediate values
+	logic [2:0] sel_reg;
+
+	//ALU register B input multiplexer
+	always@ (*) begin
+
+		//choose register b to enter the ALU input b
+		if (sel_reg == 3'd0) begin
+
+			wire_into_input_b <= output_b;
+
+		end
+
+		//choose immediate to enter the ALU input b
+		else if (sel_reg == 3'd1) begin 
+
+			wire_into_input_b <= IMM_I;
+
+		end
+
+		//choose immediate to enter the ALU input b
+		else if (sel_reg == 3'd2) begin 
+
+			wire_into_input_b <= IMM_S;
+
+		end
+
+		//choose immediate to enter the ALU input b
+		else if (sel_reg == 3'd3) begin 
+
+			wire_into_input_b <= IMM_B;
+
+		end
+
+		//choose immediate to enter the ALU input b
+		else if (sel_reg == 3'd4) begin 
+
+			wire_into_input_b <= IMM_U;
+
+		end
+
+		//choose immediate to enter the ALU input b
+		else if (sel_reg == 3'd5) begin 
+
+			wire_into_input_b <= IMM_J;
+
+		end
+
+	end
+
+	//instantiate ALU
+	ALU alu(operation_select, output_a, wire_into_input_b, alu_output);			
+
+	//it takes 0 clock cycles for the memory controller to fetch the data
+	//if you assert an address 0 at the posedge of the clock
+	//the data stored at address 0 will be available to you at the same time.
+	//Check tb.sv for implementaiton details.
+
+	//FSM states
+	//logic [4:0] CURRENT_STATE;
+	//logic [4:0] NEXT_STATE;
+
+	//State incremetor
+	enum int unsigned
+{
+	S_0,
+	S_1,
+	S_2,
+	S_3,
+	//S_PAUSE,
+	S_4
+} state, nextstate;
+/*
+	always @(posedge clk) begin
+		
+		if (reset) begin					
+			NEXT_STATE = S_0;
+			sel_reg = 0;
+		end
+
+		else begin
+			 CURRENT_STATE = NEXT_STATE;	
+		end
+
+	end
+*/
+always_ff @ (posedge clk or posedge reset) begin
+	if (reset) state <= S_0;
+	else state <= nextstate;
+end
+	//State controller
+/*
+	always @(CURRENT_STATE, done) begin
+
+		if (!reset) begin
+
+			case (CURRENT_STATE) 
+
+				S_0: NEXT_STATE <= S_1;
+				S_1: NEXT_STATE <= S_2;
+				S_2: NEXT_STATE <= S_3;
+				S_3: NEXT_STATE <= S_4;
+				S_4: begin 
+					if (done) NEXT_STATE <= S_0;
+					else NEXT_STATE <= S_5;
+				end
+				S_5: NEXT_STATE <= S_0;
+				default: NEXT_STATE <= S_0;
+
+			endcase
+
+		end
+
+	end
+*/
+always_comb begin
+	//Instruction controller
+	//always @(posedge clk) begin
+
+		word_length = WORD;
+		read_memory = 0;
+		word_index = ZERO;			
+		done = 0;		
+		nextstate = state;
+		//if (!reset) begin
+
+			case(state) 
+
+				//fetch instructions
+				S_0: begin
+					
+					read_memory = 1;
+					sel_reg = 0;	
+					write_enable = 0;								
+					nextstate = S_1;
+				end
+				
+				S_1: begin
+
+					read_memory = 1;	
+
+					//addi
+					if (III == ARITHMETIC_I && FUNCT3 == addi) begin
+						r_a = RS1;
+						//sel_reg = 1;						
+
+					end	
+
+					//andi
+					if (III == ARITHMETIC_I && FUNCT3 == andi) begin
+						r_a = RS1;
+						//sel_reg = 1;						
+
+					end			
+
+					//ori
+					if (III == ARITHMETIC_I && FUNCT3 == ori) begin
+						r_a = RS1;
+						//sel_reg = 1;						
+
+					end	
+
+					//xori
+					if (III == ARITHMETIC_I && FUNCT3 == xori) begin
+						r_a = RS1;
+						//sel_reg = 1;						
+
+					end	
+
+					//add
+					if (III == ARITHMETIC && FUNCT3 == add && FUNCT7 == 7'h00) begin
+						r_a = RS1;		
+						r_b = RS2;
+						//sel_reg = 0;						
+
+					end				
+
+					//sub
+					if (III == ARITHMETIC && FUNCT3 == sub && FUNCT7 == 7'h20) begin
+						r_a = RS1;		
+						r_b = RS2;
+						//sel_reg = 0;						
+
+					end		
+
+					//xor
+					if (III == ARITHMETIC && FUNCT3 == exor && FUNCT7 == 7'h0) begin
+						r_a = RS1;		
+						r_b = RS2;
+						//sel_reg = 0;						
+
+					end	
+
+					//and
+					if (III == ARITHMETIC && FUNCT3 == ande && FUNCT7 == 7'h0) begin
+						r_a = RS1;		
+						r_b = RS2;
+						//sel_reg = 0;						
+
+					end	
+
+					//or
+					if (III == ARITHMETIC && FUNCT3 == orr && FUNCT7 == 7'h0) begin
+						r_a = RS1;		
+						r_b = RS2;
+						//sel_reg = 0;						
+
+					end	
+					nextstate = S_2;					
+
+				end
+
+				S_2: begin
+
+					read_memory = 1;	
+
+					//addi
+					if (III == ARITHMETIC_I && FUNCT3 == addi) begin
+
+						sel_reg = 1;
+						//r_a = RS1;		
+						operation_select = 	adds;			
+
+					end
+
+					//andi
+					if (III == ARITHMETIC_I && FUNCT3 == andi) begin
+
+						sel_reg = 1;
+						//r_a = RS1;		
+						operation_select = 	ands;			
+
+					end
+
+					//ori
+					if (III == ARITHMETIC_I && FUNCT3 == ori) begin
+
+						sel_reg = 1;
+						//r_a = RS1;		
+						operation_select = 	ors;			
+
+					end
+
+					//xori
+					if (III == ARITHMETIC_I && FUNCT3 == xori) begin
+
+						sel_reg = 1;
+						//r_a = RS1;		
+						operation_select = 	xors;			
+
+					end
+
+					//add
+					if (III == ARITHMETIC && FUNCT3 == add && FUNCT7 == 7'h00) begin
+
+						//sel_reg = 0;	
+						r_a = RS1;		
+						r_b = RS2;
+						//operation_select = adds;						
+
+					end	
+
+					//sub
+					if (III == ARITHMETIC && FUNCT3 == sub && FUNCT7 == 7'h20) begin
+
+						//sel_reg = 0;	
+						r_a = RS1;		
+						r_b = RS2;
+						//operation_select = subs;						
+
+					end	
+
+					//xor
+					if (III == ARITHMETIC && FUNCT3 == exor && FUNCT7 == 7'h0) begin
+
+						//sel_reg = 0;	
+						r_a = RS1;		
+						r_b = RS2;
+						//operation_select = xors;						
+
+					end	
+
+					//and
+					if (III == ARITHMETIC && FUNCT3 == ande && FUNCT7 == 7'h0) begin
+
+						//sel_reg = 0;	
+						r_a = RS1;		
+						r_b = RS2;
+						//operation_select = ands;						
+
+					end
+
+					//or
+					if (III == ARITHMETIC && FUNCT3 == orr && FUNCT7 == 7'h0) begin
+
+						//sel_reg = 0;	
+						r_a = RS1;		
+						r_b = RS2;
+						//operation_select = ors;						
+
+					end	
+					nextstate = S_3;
+				end
+
+				S_3: begin 
+
+					read_memory = 1;	
+
+					//addi
+					if (III == ARITHMETIC_I && FUNCT3 == addi) begin
+
+						write_address = RD;
+						write_enable = 1;
+						write_data = alu_output;		
+
+					end	
+
+					//andi
+					if (III == ARITHMETIC_I && FUNCT3 == andi) begin
+
+						write_address = RD;
+						write_enable = 1;
+						write_data = alu_output;		
+
+					end	
+					
+					//ori
+					if (III == ARITHMETIC_I && FUNCT3 == ori) begin
+
+						write_address = RD;
+						write_enable = 1;
+						write_data = alu_output;		
+
+					end	
+
+					//xori
+					if (III == ARITHMETIC_I && FUNCT3 == xori) begin
+
+						write_address = RD;
+						write_enable = 1;
+						write_data = alu_output;		
+
+					end	
+
+					//add
+					if (III == ARITHMETIC && FUNCT3 == add) begin
+
+						sel_reg = 0;
+						write_address = RD;
+						write_enable = 1;
+						write_data = alu_output;		
+
+					end			
+
+					//sub
+					if (III == ARITHMETIC && FUNCT3 == sub && FUNCT7 == 7'h20) begin
+
+						sel_reg = 0;	
+						write_address = RD;
+						write_enable = 1;
+						operation_select = subs;
+						write_data = alu_output;						
+
+					end		
+
+					//and
+					if (III == ARITHMETIC && FUNCT3 == ande && FUNCT7 == 7'h00) begin
+
+						sel_reg = 0;	
+						write_address = RD;
+						write_enable = 1;
+						operation_select = ands;
+						write_data = alu_output;						
+
+					end	
+
+					//or
+					if (III == ARITHMETIC && FUNCT3 == orr && FUNCT7 == 7'h00) begin
+
+						sel_reg = 0;	
+						write_address = RD;
+						write_enable = 1;
+						operation_select = ors;
+						write_data = alu_output;						
+
+					end		
+
+					//xor
+					if (III == ARITHMETIC && FUNCT3 == exor && FUNCT7 == 7'h0) begin
+
+						sel_reg = 0;	
+						operation_select = xors;
+						write_enable = 1;	
+						write_address = RD;		
+						write_data = alu_output;			
+
+					end	
+					nextstate = S_4;					
+
+				end
+
+				S_4: begin 
+
+					done = 1;
+					write_enable = 1;
+					nextstate = S_0;
+				end
+				
+			
+			endcase
+
+		end
+
+	//Address controller
+	always @(reset, done) begin
+
+		if (reset)
+			PC <= 0;
+
+		else if (done) 
+			PC <= PC + 32'd4;
+
+		else if (custom_wren)
+			PC <= custom_address;
+
+	end
+
+endmodule
+
+module ALU # (
+	parameter IW = 32, // instr width
+	parameter REGS = 32 // number of registers
+) (
+	input [3:0] instruction, 
+	input signed [IW-1:0] rs1,
+	input signed [IW-1:0] rs2,
+	output [IW-1:0] alu_out
+);	
+	logic signed [IW-1:0] rd;
+	assign alu_out = rd;
+
+	logic [IW-1:0] rs1_u;
+	logic [IW-1:0] rs2_u;
+
+	assign rs1_u = rs1;
+	assign rs2_u = rs2;
+
+	always@ (*) begin
+
+		case (instruction) 
+
+			adds: rd <= rs1 + rs2;
+			subs: rd <= rs1 - rs2;
+			xors: rd <= rs1 ^ rs2;
+			ors:  rd <= rs1 | rs2;
+			ands: rd <= rs1 & rs2;
+			slls: rd <= rs1 << rs2[4:0];
+			srls: rd <= rs1 >> rs2[4:0];
+			sras: rd <= rs1 >>> rs2[4:0]; //Arithmetic Shift Right
+			slts: rd <= (rs1 < rs2) ? 1 : 0;
+			sltus: rd <= ((rs1_u) < (rs2_u)) ? 1 : 0;
+			default: rd <= 32'hzzzzzzzz;
+
+		endcase
+		
+	end
+
+endmodule
+
+module regfile # (
+	parameter IW = 32, // instr width
+	parameter REGS = 32 // number of registers
+) (input clock, input rst, input [4:0] address_write, input en_write, input [IW-1:0] data, input [4:0] r_a, input [4:0] r_b, output [IW-1:0] a, output [IW-1:0] b, output [IW-1:0] regdata[0:REGS-1] /*redundant output*/);
+
+	// Register file storage
+	//reg [IW-1:0] REGISTERS[0:REGS-1];
+	//assign regdata = REGISTERS;	
+	assign a = regdata[r_a];
+	assign b = regdata[r_b];
+/*
+	always@ (posedge rst) begin
+		REGISTERS[0] = 32'b0; REGISTERS[8] = 32'b0; REGISTERS[16] = 32'b0; REGISTERS[24] = 32'b0;
+		REGISTERS[1] = 32'b0; REGISTERS[9] = 32'b0; REGISTERS[17] = 32'b0; REGISTERS[25] = 32'b0;
+		REGISTERS[2] = 32'b0; REGISTERS[10] = 32'b0; REGISTERS[18] = 32'b0; REGISTERS[26] = 32'b0;
+		REGISTERS[3] = 32'b0; REGISTERS[11] = 32'b0; REGISTERS[19] = 32'b0; REGISTERS[27] = 32'b0;
+		REGISTERS[4] = 32'b0; REGISTERS[12] = 32'b0; REGISTERS[20] = 32'b0; REGISTERS[28] = 32'b0;
+		REGISTERS[5] = 32'b0; REGISTERS[13] = 32'b0; REGISTERS[21] = 32'b0; REGISTERS[29] = 32'b0;
+		REGISTERS[6] = 32'b0; REGISTERS[14] = 32'b0; REGISTERS[22] = 32'b0; REGISTERS[30] = 32'b0;
+		REGISTERS[7] = 32'b0; REGISTERS[15] = 32'b0; REGISTERS[23] = 32'b0; REGISTERS[31] = 32'b0;
+	end
+*/	
+	// Read and write from register file
+	always @(posedge clock)
+		if (en_write)
+			regdata[address_write] <= data;			
+
+endmodule
+//cd "C://Users//Harsimrat//OneDrive - University of Toronto//Third Year//ECE342//Labs//Lab5"
